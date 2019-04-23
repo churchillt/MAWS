@@ -1,0 +1,7 @@
+cscope.out
+tags
+maws
+*.swp
+*.o
+*.so
+*.a
