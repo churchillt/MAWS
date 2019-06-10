@@ -15,13 +15,20 @@
 #include <stdio.h>
 #include <stdlib.h>      /* needed for os x */
 #include <assert.h>
+#include <errno.h>
 #include <unistd.h>
 #include <string.h>      /* for memset */
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <arpa/inet.h>   /* for printing an internet address in a user-friendly way */
 #include <netinet/in.h>
 #include <sys/errno.h>   /* defines ERESTART, EINTR */
 #include <sys/wait.h>    /* defines WNOHANG, for wait() */
+
+#include <fcntl.h>
+#include <syslog.h>
+
 #include <avahi-client/client.h>
 #include <avahi-client/publish.h>
 #include <avahi-common/alternative.h>
@@ -75,7 +82,7 @@ static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state,
     switch (state) {
         case AVAHI_ENTRY_GROUP_ESTABLISHED :
             /* The entry group has been established successfully */
-            fprintf(stderr, "Service '%s' successfully established.\n", name);
+            syslog(LOG_ERR, "Service '%s' successfully established.\n", name);
             break;
         case AVAHI_ENTRY_GROUP_COLLISION : {
             char *n;
@@ -84,13 +91,13 @@ static void entry_group_callback(AvahiEntryGroup *g, AvahiEntryGroupState state,
             n = avahi_alternative_service_name(name);
             avahi_free(name);
             name = n;
-            fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
+            syslog(LOG_ERR, "Service name collision, renaming service to '%s'\n", name);
             /* And recreate the services */
             create_services(avahi_entry_group_get_client(g));
             break;
         }
         case AVAHI_ENTRY_GROUP_FAILURE :
-            fprintf(stderr, "Entry group failure: %s\n", avahi_strerror(avahi_client_errno(avahi_entry_group_get_client(g))));
+            syslog(LOG_ERR, "Entry group failure: %s\n", avahi_strerror(avahi_client_errno(avahi_entry_group_get_client(g))));
             /* Some kind of failure happened while we were registering our services */
             avahi_simple_poll_quit(simple_poll);
             break;
@@ -108,24 +115,24 @@ static void create_services(AvahiClient *c) {
      * entry group if necessary */
     if (!group)
         if (!(group = avahi_entry_group_new(c, entry_group_callback, NULL))) {
-            fprintf(stderr, "avahi_entry_group_new() failed: %s\n", avahi_strerror(avahi_client_errno(c)));
+            syslog(LOG_ERR, "avahi_entry_group_new() failed: %s\n", avahi_strerror(avahi_client_errno(c)));
             goto fail;
         }
     /* If the group is empty (either because it was just created, or
      * because it was reset previously, add our entries.  */
     if (avahi_entry_group_is_empty(group)) {
-        fprintf(stderr, "Adding service '%s'\n", name);
+        syslog(LOG_ERR, "Adding service '%s'\n", name);
 
         /* Add the service for WISA */
         if ((ret = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, name, "_wisa._tcp", NULL, NULL, port, NULL, NULL, NULL)) < 0) {
             if (ret == AVAHI_ERR_COLLISION)
                 goto collision;
-            fprintf(stderr, "Failed to add _wisa._tcp service: %s\n", avahi_strerror(ret));
+            syslog(LOG_ERR, "Failed to add _wisa._tcp service: %s\n", avahi_strerror(ret));
             goto fail;
         }
         /* Tell the server to register the service */
         if ((ret = avahi_entry_group_commit(group)) < 0) {
-            fprintf(stderr, "Failed to commit entry group: %s\n", avahi_strerror(ret));
+            syslog(LOG_ERR, "Failed to commit entry group: %s\n", avahi_strerror(ret));
             goto fail;
         }
     }
@@ -137,7 +144,7 @@ collision:
     n = avahi_alternative_service_name(name);
     avahi_free(name);
     name = n;
-    fprintf(stderr, "Service name collision, renaming service to '%s'\n", name);
+    syslog(LOG_ERR, "Service name collision, renaming service to '%s'\n", name);
     avahi_entry_group_reset(group);
     create_services(c);
     return;
@@ -155,7 +162,7 @@ static void client_callback(AvahiClient *c, AvahiClientState state, AVAHI_GCC_UN
             create_services(c);
             break;
         case AVAHI_CLIENT_FAILURE:
-            fprintf(stderr, "Client failure: %s\n", avahi_strerror(avahi_client_errno(c)));
+            syslog(LOG_ERR, "Client failure: %s\n", avahi_strerror(avahi_client_errno(c)));
             avahi_simple_poll_quit(simple_poll);
             break;
         case AVAHI_CLIENT_S_COLLISION:
@@ -201,7 +208,7 @@ int main(int argc, char **argv)
            case 'p':
                port = atoi(optarg);
                if (port < 1024 || port > 65535) {
-                   fprintf(stderr, "invalid port number: %s\n", optarg);
+                   syslog(LOG_ERR, "invalid port number: %s\n", optarg);
                    err = 1;
                }
                break;
@@ -215,16 +222,64 @@ int main(int argc, char **argv)
     }
 
     if (err || (optind < argc)) {
-            fprintf(stderr, usage, argv[0]);
-            exit(1);
+        fprintf(stderr, usage, argv[0]);
+        exit(1);
     }
+
+
+    setlogmask (LOG_UPTO (LOG_NOTICE));
+    openlog ("maws", LOG_CONS | LOG_PID | LOG_NDELAY, LOG_LOCAL1);
+
+    /* Our process ID and Session ID */
+    pid_t pid, sid;
+    
+    /* Fork off the parent process */
+    pid = fork();
+    if (pid < 0) {
+        exit(EXIT_FAILURE);
+    }
+
+    /* If we got a good PID, then
+       we can exit the parent process. */
+    if (pid > 0) {
+        exit(EXIT_SUCCESS);
+    }
+
+    /* Change the file mode mask */
+    umask(0);
+    
+            
+    /* Create a new SID for the child process */
+    sid = setsid();
+    if (sid < 0) {
+        /* Log the failure */
+        exit(EXIT_FAILURE);
+    }
+
+    FILE* pid_file = fopen("/run/maws.pid", "w");
+    fprintf(pid_file, "%d", sid);
+    fclose(pid_file);
+            
+    /* Open any logs here */        
+
+    
+    /* Change the current working directory */
+    if ((chdir("/")) < 0) {
+        /* Log the failure */
+        exit(EXIT_FAILURE);
+    }
+    
+    /* Close out the standard file descriptors */
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
 
     // ------------------------------------------------------
     // Setup Avahai service
     // ------------------------------------------------------
     /* Allocate main loop object */
     if (!(simple_poll = avahi_simple_poll_new())) {
-        fprintf(stderr, "Failed to create simple poll object.\n");
+        syslog(LOG_ERR, "Failed to create simple poll object.\n");
         goto fail;
     }
 
@@ -235,7 +290,7 @@ int main(int argc, char **argv)
 
     /* Check whether creating the client object succeeded */
     if (!client) {
-        fprintf(stderr, "Failed to create client: %s\n", avahi_strerror(error));
+        syslog(LOG_ERR, "Failed to create client: %s\n", avahi_strerror(error));
         goto fail;
     }
 
@@ -284,11 +339,11 @@ serve(int32_t port)
 
     // Open USB TX
     if (libusb_init(NULL) < 0) {
-        perror("cannot initialize USB interface");
+        syslog(LOG_ERR, "cannot initialize USB interface\n");
         exit(1);
     }
     if ((devh = libusb_open_device_with_vid_pid(NULL, USB_VENDOR_ID, USB_PRODUCT_ID)) <= 0) {
-        perror("cannot open USB device");
+        syslog(LOG_ERR, "cannot open USB device\n");
         exit(1);
     }
 
@@ -298,7 +353,7 @@ serve(int32_t port)
     /*   conenction based on byte streams.  With IP, this means that */
     /*   TCP will be used */
     if ((svc = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("cannot create socket");
+        syslog(LOG_ERR, "cannot create socket\n");
         exit(1);
     }
 
@@ -321,17 +376,17 @@ serve(int32_t port)
 
     /* bind to the address to which the service will be offered */
     if (bind(svc, (struct sockaddr *)&my_addr, sizeof(my_addr)) < 0) {
-        perror("bind failed");
+        syslog(LOG_ERR, "bind failed\n");
         exit(1);
     }
 
     /* set up the socket for listening with a queue length of 5 */
     if (listen(svc, 5) < 0) {
-        perror("listen failed");
+        syslog(LOG_ERR, "listen failed\n");
         exit(1);
     }
 
-    printf("server started on %s, listening on port %d\n", hostname, port);
+    syslog(LOG_INFO, "server started on %s, listening on port %d\n", hostname, port);
 
     /* loop forever - wait for connection requests and perform the service */
     alen = sizeof(client_addr);     /* length of address */
@@ -342,28 +397,28 @@ serve(int32_t port)
             /* was interrupted. In this case, loop back and */
             /* try again */
             if ((errno != ECHILD) && (errno != ERESTART) && (errno != EINTR)) {
-                perror("accept failed");
+                syslog(LOG_ERR, "accept failed\n");
                 exit(1);
             }
         }
 
-        printf("received a connection from: %s port %d\n",
+        syslog(LOG_INFO,"received a connection from: %s port %d\n",
                 inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
         do {
             memset(&message, 0, sizeof(message));
             
             // Read Command from socket
             if ((rval = read(rqst, &message, sizeof(message))) == -1)
-                perror("reading stream message");
+                syslog(LOG_ERR, "reading stream message\n");
             if (rval == 0)
-                printf("Ending connection\n");
+                syslog(LOG_INFO, "Ending connection\n");
             else {
 
                 // NET_Write 
                 if ( message.readWrite ==  MSG_WRITE) {
                     bytes_written = libusb_control_transfer(devh, CTRL_OUT, MEM_RQ, 0, 0, (unsigned char *)&message.payload, message.length, 0);
                     if (bytes_written < 0) {
-                        printf("USB write Error: %d\n", bytes_written); 
+                        syslog(LOG_ERR, "USB write Error: %d\n", bytes_written); 
                     }
                     
                 // NET_Read
@@ -373,7 +428,7 @@ serve(int32_t port)
                     {
                         bytes_read = libusb_control_transfer(devh, CTRL_IN, MEM_RQ, 0, 0, (unsigned char *)&message.payload, sizeof(message.payload), 0);
                         if (bytes_read < 0) {
-                            printf("USB read Error: %d\n", bytes_read); 
+                            syslog(LOG_ERR, "USB read Error: %d\n", bytes_read); 
                         }
                         write(rqst, (unsigned char *)&message.payload, bytes_read);
                     }

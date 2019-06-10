@@ -1,2 +1,2 @@
-SUBSYSTEM=="usb", SYMLINK+="my_audio", ATTRS{idVendor}=="2495", ACTION=="add", RUN+="/usr/local/bin/maws.sh start"
-SUBSYSTEM=="usb", ACTION=="remove", RUN+="/usr/local/bin/maws.sh stop"
+SUBSYSTEM=="usb", ACTION=="add" ATTRS{manufacturer}=="Summit", ATTRS{idVendor}=="2495", RUN+="/usr/sbin/service maws start"
+SUBSYSTEM=="usb", ACTION=="remove", RUN+="/usr/sbin/service maws stop"
