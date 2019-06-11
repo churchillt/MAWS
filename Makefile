@@ -21,5 +21,15 @@ maws: maws.o
 	$(CC) -o maws maws.o $(LIBS)
 
 
+install:
+	service maws stop
+	cp maws.sh /etc/init.d/maws
+
+	cp 80-local.rules  /etc/udev/rules.d/
+	udevadm control --reload
+
+	cp maws /usr/sbin/
+
+
 clean:
 	rm -f maws maws.o 

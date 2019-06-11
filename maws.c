@@ -285,19 +285,30 @@ int main(int argc, char **argv)
 
     name = avahi_strdup(room);
 
-    /* Allocate a new client */
-    client = avahi_client_new(avahi_simple_poll_get(simple_poll), 0, client_callback, NULL, &error);
-
-    /* Check whether creating the client object succeeded */
-    if (!client) {
+    for (int i=0; i<10; i++) {
+	
+        /* Allocate a new client */
+        client = avahi_client_new(avahi_simple_poll_get(simple_poll), 0, client_callback, NULL, &error);
+    
+        /* Check whether creating the client object succeeded */
+        if (client) {
+	    break;
+        }
+        if (simple_poll)
+            avahi_simple_poll_free(simple_poll);
         syslog(LOG_ERR, "Failed to create client: %s\n", avahi_strerror(error));
+
+	sleep(2);
+    }
+    if (!client) {
+        syslog(LOG_ERR, "Timeout creating client: %s\n", avahi_strerror(error));
         goto fail;
     }
 
-    // After 5s ... start server
+    // After 3s ... start server
     avahi_simple_poll_get(simple_poll)->timeout_new(
         avahi_simple_poll_get(simple_poll),
-        avahi_elapse_time(&tv, 1000*5, 0),
+        avahi_elapse_time(&tv, 1000*3, 0),
         server_callback,
         client);
 

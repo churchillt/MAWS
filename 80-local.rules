@@ -1,2 +1,2 @@
-SUBSYSTEM=="usb", ACTION=="add" ATTRS{manufacturer}=="Summit", ATTRS{idVendor}=="2495", RUN+="/usr/sbin/service maws start"
-SUBSYSTEM=="usb", ACTION=="remove", RUN+="/usr/sbin/service maws stop"
+SUBSYSTEM=="sound", ACTION=="add", ATTRS{manufacturer}=="Summit", ATTRS{idVendor}=="2495", RUN+="/usr/sbin/service maws start"
+SUBSYSTEM=="sound", ACTION=="remove", RUN+="/usr/sbin/service maws stop"
